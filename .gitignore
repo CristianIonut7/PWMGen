@@ -1,0 +1,38 @@
+# Vivado Log and Journal files
+*.jou
+*.log
+*.str
+
+# Vivado internal directories
+.Xil/
+*.os/
+*.cache/
+*.hw/
+*.sim/
+*.runs/
+*.ip_user_files/
+
+# Synthesis and Implementation results
+*.dcp
+*.bit
+*.bin
+*.mcs
+
+# Reports and temporary files
+*.rpt
+*.pb
+*.wdb
+*.tmp
+
+# SDK / Vitis workspaces
+.sdk/
+.metadata/
+*.elf
+*.hdf
+*.xsa
+
+# Other Temporary and generated files
+usage_statistics_webtalk.html
+usage_statistics_webtalk.xml
+vivado_pid*.zip
+vivado_pid*.str
