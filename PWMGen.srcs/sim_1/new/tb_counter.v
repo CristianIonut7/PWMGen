@@ -60,11 +60,6 @@ module tb_counter;
         $display("[Timp %0t] Test 2: Prescaler = 2 (Div 4)", $time);
         prescale = 8'd2;
         
-        //count reset
-        count_reset = 1;
-        #10
-        count_reset = 0;
-        
         #100;
         
         //Test 3: prescale = 1, period = 5, upnotdown = 0
@@ -72,12 +67,40 @@ module tb_counter;
         prescale = 8'd1;
         upnotdown = 0;   
         
-        //count reset
-        count_reset = 1;
-        #10
-        count_reset = 0;
+        #200;
         
-        #100;
+        
+        //Test 4: prescale = 2, period = 3, upnotdown = 1
+        $display("[Timp %0t] Test 4: Switch All", $time);
+        prescale = 8'd2;
+        upnotdown = 1;  
+        period = 3; 
+        
+        #250; 
+        
+        
+        //Test 5: prescale = 1, period = 4, upnotdown = 1
+        $display("[Timp %0t] Test 5: Update on !en", $time);
+        en = 0;
+        prescale = 1;
+        period = 4;
+        upnotdown = 1;
+        
+        #20
+        
+        en = 1;
+        
+        #100
+        
+        //Test 6: period = 0
+        $display("[Timp %0t] Test 5: Update on !en", $time);
+        period = 0;
+        
+        #150
+        
+        upnotdown = !upnotdown;
+        
+        #150
         
         $finish;
     end
