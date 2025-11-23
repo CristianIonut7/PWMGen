@@ -12,19 +12,20 @@ module pwm_gen (
     // top facing signals
     output pwm_out
 );
-
+    //values used in the gen block, they only modify on count overflow
     reg [15:0] active_compare1;
     reg [15:0] active_compare2;
     reg [7:0]  active_functions;
     reg [15:0] active_period;
     
-    reg first_allign;
-    wire safe_to_update;
     
-    reg out;
-    assign pwm_out = out;
+    wire safe_to_update;
     assign safe_to_update = (!pwm_en) || (count_val == (active_period ? active_period - 1 : 0));
 
+    reg out; //aux var for modifying output
+    assign pwm_out = out;
+    
+    //Block for updates
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             active_compare1  <= 16'd0;
@@ -38,13 +39,14 @@ module pwm_gen (
                 active_compare2  <= compare2;
                 active_functions <= functions;
                 active_period <= period;
+                //this is for what value is in out when modifying the parameters
                 if(active_period != period || compare1 != active_compare1 || compare2 != active_compare2 || functions != active_functions) begin
-                    if(functions[1] == 1) begin
+                    if(functions[1] == 1) begin //functions = 2
                         out <= 0;
                     end else begin
-                        if(functions[0] == 1) begin
+                        if(functions[0] == 1) begin //functions is 1
                             out <= 0;
-                        end else begin
+                        end else begin //functions is 0
                             out <= 1;
                         end
                     end
@@ -54,20 +56,20 @@ module pwm_gen (
     end
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+        if (!rst_n) begin //reset
             out <= 1'b0;
         end else begin
-            if (!pwm_en) begin
+            if (!pwm_en) begin //internal reset
                 out <= 1'b0;
             end else begin
-                if (active_functions[1] == 1'b1) begin
+                if (active_functions[1] == 1'b1) begin //unaligned
                     if (count_val == (active_compare1 ? active_compare1 - 1 : active_period - 1)) begin
                         out <= 1'b1;
                     end else if (count_val == (active_compare2 ? active_compare2 - 1 : active_period - 1)) begin
                         out <= 1'b0;
                     end
                 end else if (count_val == (active_compare1 ? active_compare1 - 1 : active_period - 1)) begin
-                    out <= ~out;
+                    out <= ~out; //aligned (is not important if left or right)
                 end
             end
         end
