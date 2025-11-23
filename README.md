@@ -142,9 +142,133 @@ Aceasta arhitectura permite perifericului sa interpreteze corect comenzile maste
 
 
 ### 3. Registers (regs.v)
-*Responsabil: Voicu Alexandru*
+*Responsabil: Voicu Alexandru*💾
 
-> TODO: Aici trebuie completata descrierea despre harta memoriei si accesul la registri pe 8 biti vs 16 biti.
+Modulul **regs.v** reprezintă mediul de stocare și configurare pentru întreg perifericul PWM. Acesta conectează decodorul de instrucțiuni cu modulele Counter și PWM Generator, asigurând o interfață coerentă, stabilă și sincronă pe o magistrală de date de doar 8 biți. Rolul său este de a primi comenzi de scriere/citire prin SPI, de a actualiza registre interne și de a furniza modulelor hardware valorile necesare funcționării.
+
+---
+
+### **Structura Generală a Registrelor**
+
+Registrele implementate includ:
+
+- **PERIOD (period_low, period_high)** – definește perioada PWM.
+- **COMPARE1 / COMPARE2 (low/high)** – pragurile de comutare PWM.
+- **PRESCALE** – divizorul de frecvență al contorului.
+- **UPDOWN** – modul de numărare (în sus / în jos).
+- **FUNCTIONS** – modul de generare PWM (Aligned Left/Right, Unaligned).
+- **COUNTER_RESET** – scriere = impuls pentru resetarea contorului.
+- **COUNTER_VAL (low/high)** – valoarea curentă a contorului (read-only).
+
+Toate registrele pe 16 biți sunt mapate pe câte **două adrese consecutive**.
+
+---
+
+### **Adresarea pe Octeți (Byte Addressing)**
+
+Magistrala internă este pe **8 biți**, în timp ce multe dintre registre necesită **16 biți** pentru configurare. Astfel, structura este:
+
+- `Address` → octetul Low  
+- `Address + 1` → octetul High  
+
+Exemple:
+
+- `0x00` → PERIOD_LOW  
+- `0x01` → PERIOD_HIGH  
+- `0x02` → COMPARE1_LOW  
+- `0x03` → COMPARE1_HIGH  
+
+Această abordare:
+
+1. Permite un transfer gradual al valorilor dinspre SPI.
+2. Previne conflictele de sincronizare între byte-ul low și high.
+3. Simplifică decodorul de instrucțiuni, care trimite mereu doar 8 biți.
+
+---
+
+### **Organizarea Internă: Două Blocuri Always Complementare**
+
+#### **1. Bloc Secvențial (posedge clk / negedge rst_n)**  
+Acest bloc modelează registrele hardware reale.
+
+Responsabilități:
+
+- Aplicarea **resetului asincron**.
+- Realizarea operațiilor de **scriere (write_enable)**.
+- Actualizarea doar a octetului relevant în funcție de adresă.
+- Manipularea logicii pentru registrele speciale (ex: COUNTER_RESET).
+
+Caracteristici:
+
+- Folosește **atribuiri non-blocante (`<=`)**, pentru a reflecta modul de funcționare al flip-flop-urilor.
+- Garantează că valorile sunt stabilizate pentru ciclul următor de ceas.
+
+---
+
+#### **2. Bloc Combinatoriu (always @*)**  
+Acest bloc modelează un multiplexor mare responsabil de **citirea registrelor**.
+
+Responsabilități:
+
+- Selectarea corectă a valorii de trimis pe `data_read`, în funcție de adresă.
+- Împărțirea registrelor pe 16 biți în octeți Low/High.
+- Expansiunea registrelor pe 1 bit în format pe 8 biți.
+- Accesarea specială a registrului read-only `COUNTER_VAL`.
+
+Caracteristici:
+
+- Nu include operații de scriere sau memorare.
+- Răspunsul este combinatoriu și nu depinde de ceas.
+- Registrele write-only returnează `8'h00`.
+
+---
+
+### **Gestionarea Resetului Contorului (COUNTER_RESET)**
+
+Registrul `COUNTER_RESET` (adresa `0x07`) este implementat ca un mecanism special pentru generarea unui **impuls de reset pe un singur ciclu de ceas**, indiferent de valoarea scrisă.
+
+Comportament:
+
+1. Când se scrie în adresa `0x07`, blocul secvențial setează `count_reset <= 1`.
+2. La ciclul următor de ceas, semnalul este resetat automat la `0`.
+3. Nu există stocare permanentă – este un registru virtual, util pentru declanșarea acțiunilor momentane.
+
+Avantaje:
+
+- Reset clar și controlat.
+- Nu poate rămâne blocat în starea „activ”.
+- Evită problemele din sincronizarea cu modul Counter.
+
+---
+
+### **Citirea Valoarii Contorului (COUNTER_VAL)**
+
+Registrele `0x08` și `0x09` sunt **Read-Only**. Ele nu folosesc memorie internă:
+
+- În loc să stocheze valori, logica combinatorie citește direct intrarea `counter_val[15:0]`.
+- Datele citite reflectă exact starea contorului în ciclul curent de ceas.
+- Se elimină complet riscul de dezaliniere între contor și modulul Registers.
+
+Această abordare este ideală pentru monitorizarea în timp real a perifericului.
+
+---
+
+### **Rezumat al Fluxului de Operare**
+
+1. SPI trimite un byte de scriere.
+2. Instruction Decoder furnizează `addr`, `data_write`, `write_enable`.
+3. Blocul secvențial actualizează registrele interne.
+4. Modulele Counter și PWM Generator folosesc valorile stabile.
+5. La cererea de citire, blocul combinatoriu plasează pe magistrală octetul corespunzător.
+
+Acest design asigură:
+
+- izolare clară între logica de comunicare și logica funcțională,
+- consistență între byte-ul HIGH și LOW,
+- comportament determinist și sigur pentru modularea PWM.
+
+
+
 
 ### 4. Counter (counter.v)
 *Responsabil: Pleseanu Cristian*
