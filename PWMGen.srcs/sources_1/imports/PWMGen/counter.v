@@ -16,9 +16,19 @@ module counter (
     reg [7:0]  active_prescale;
     reg active_upnotdown;
     
+    
+    reg [31:0] prescaler_cnt; //internal counter for prescale 
+    wire [31:0] prescaler_limit; //the number of cicles for counter
+    wire tick; // the signal for counter
+    
+    assign prescaler_limit = (32'd1 << active_prescale); //2^prescale 
+
+    assign tick = (prescaler_cnt >= (prescaler_limit - 1)); //tick is true if internal counter is equal to the counter_limit - 1
+    
     wire safe_to_update;
     assign safe_to_update = (!en) || (count_val == 1 && active_upnotdown == 0) || (count_val == active_period - 1 && active_upnotdown == 1);
     
+   
     // Block for updates
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -33,15 +43,6 @@ module counter (
             end
         end
     end
-    
-    reg [31:0] prescaler_cnt; //internal counter for prescale 
-    wire [31:0] prescaler_limit; //the number of cicles for counter
-    wire tick; // the signal for counter
-    
-    assign prescaler_limit = (32'd1 << active_prescale); //2^prescale 
-
-    assign tick = (prescaler_cnt >= (prescaler_limit - 1)); //tick is true if internal counter is equal to the counter_limit - 1
-
     // Block for prescale
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin //reset
