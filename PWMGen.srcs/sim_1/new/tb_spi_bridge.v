@@ -1,41 +1,20 @@
-`timescale 1ns / 1ps
+`timescale 1ns/1ps
 
 module tb_spi_bridge;
 
-    // ----------------------------------------------------
-    // 1. Semnale de Interfa?? (Inputs ca reg, Outputs ca wire)
-    // ----------------------------------------------------
+    reg clk;
+    reg rst_n;
 
-    // Ceasul perifericului (100MHz -> Perioada 10ns)
-    reg clk = 1'b0;
-    reg rst_n = 1'b0;
-
-    // SPI Master (TB) facing signals
-    reg sclk = 1'b0;
-    reg cs_n = 1'b1;
-    reg mosi = 1'b0;
+    reg sclk;
+    reg cs_n;
+    reg mosi;
     wire miso;
 
-    // Internal facing (catre Decodor - pentru verificare)
     wire byte_sync;
     wire [7:0] data_in;
-    // data_out este reg in TB, simuleaza datele venite de la Decodor
-    reg [7:0] data_out = 8'hAA; 
-    
-    // Semnal pentru a monitoriza contorul intern (pentru debugging)
-    wire [2:0] monitor_bit_counter; 
-    
-    // Variabila folosita in blocul initial pentru a stoca datele primite de Master
-    reg [7:0] master_rx_data; 
+    reg  [7:0] data_out;
 
-    // Parametri
-    parameter CLK_PERIOD = 10; // 10 ns (100 MHz)
-    parameter SCLK_HALF_PERIOD = 5; // 5 ns - presupunem ca CLK SPI este CLK Periferic
-
-    // ----------------------------------------------------
-    // 2. Instantierea Modulului de Testat (DUT)
-    // ----------------------------------------------------
-
+    // instantiere DUT
     spi_bridge DUT (
         .clk(clk),
         .rst_n(rst_n),
@@ -47,116 +26,79 @@ module tb_spi_bridge;
         .data_in(data_in),
         .data_out(data_out)
     );
-    
-    // Conectarea la semnalul intern (rezolva eroarea de compilare)
-    assign monitor_bit_counter = DUT.bit_counter;
-
-    // ----------------------------------------------------
-    // 3. Generarea Ceasului Perifericului (CLK)
-    // ----------------------------------------------------
-
+    wire [7:0] random;
+    assign random = DUT.miso_shift;
+    // =======================
+    // Clock intern periferic
+    // =======================
     initial begin
-        clk = 1'b0;
-        forever #(CLK_PERIOD / 2) clk = ~clk;
+        clk = 0;
+        forever #10 clk = ~clk;   // 100 MHz
     end
 
-    // ----------------------------------------------------
-    // 4. Task-uri Utile (Simuleaza Master SPI)
-    // Task-ul este declarat AUTOMATIC pentru a permite variabile locale
-    // ----------------------------------------------------
+    // =======================
+    // Clock SPI (master)
+    // =======================
+    initial begin
+        sclk = 0;
+        forever #10 sclk = ~sclk; // 25 MHz
+    end
 
-    // Task pentru a simula o transmisie/receptie de 8 bi?i
-    task automatic spi_transfer_byte;
-        input [7:0] tx_data;
-        output [7:0] rx_data;
-        reg [7:0] temp_rx_data; // Declaratie fara initializare
+    // =======================
+    // Task - trimite un byte pe MOSI (MSB-first)
+    // =======================
+    task spi_send_byte(input [7:0] b);
         integer i;
         begin
-            temp_rx_data = 8'h00; // Initializare in blocul procedural
-            cs_n = 1'b0; // Activeaza Chip Select
-            
-            $display("[Timp %0t] SPI START (TX: %h, Asteapta RX: %h)", $time, tx_data, data_out);
-
-            // Transfera 8 bi?i (MSB primul)
             for (i = 7; i >= 0; i = i - 1) begin
-                
-                // 1. MASTER plaseaza datele pe MOSI 
-                mosi = tx_data[i];
-                #(SCLK_HALF_PERIOD) sclk = 1'b1; // Front Crescator SCLK (SLAVE citeste MOSI)
-                
-                // 2. MASTER citeste MISO
-                temp_rx_data[i] = miso;
-                
-                // Foloseste semnalul de monitorizare extern
-                $display("[Timp %0t] Bit %0d: MOSI=%b, MISO=%b, Counter=%d", $time, i, mosi, miso, monitor_bit_counter);
-
-                // 3. MASTER asteapta
-                #(SCLK_HALF_PERIOD) sclk = 1'b0; // Front Descrescator SCLK (SLAVE plaseaza noul MISO)
+                @(negedge sclk);    // punem bitul pe negedge
+                mosi = b[i];
+                @(posedge sclk);    // citire pe posedge (CPHA=0)
             end
-            
-            cs_n = 1'b1; // Dezactiveaza Chip Select
-            rx_data = temp_rx_data;
-
-            $display("[Timp %0t] SPI END. Receptionat: %h. Data_in Slave: %h.", $time, rx_data, data_in);
         end
     endtask
 
-    // ----------------------------------------------------
-    // 5. Stimuli de Test
-    // ----------------------------------------------------
-
+    // =======================
+    // Test principal
+    // =======================
     initial begin
-        
-        // Initial setup
-        rst_n = 1'b0;       
-        sclk = 1'b0;
-        cs_n = 1'b1;
-        mosi = 1'b0;
-        
-        #20; // Asteapta stabilitatea
-        
-        // Reset
-        rst_n = 1'b1; // Start
-        $display("[Timp %0t] Reset terminat.", $time);
-        
-        #10;
-        
-        // ----------------------------------------
-        // TEST 1: Receptie (Master TX: 0x93 -> Slave RX)
-        // ----------------------------------------
-        
-        $display("\n--- TEST 1: Scriere (Master -> Slave) ---");
-        spi_transfer_byte(8'h93, master_rx_data); 
-        
-        // Verificare receptie Slave
-        #10;
-        if (data_in === 8'h93 && byte_sync === 1'b1) begin
-            $display("[Timp %0t] TEST 1 SUCCES: Slave a receptionat 0x93 si byte_sync activ.", $time);
-        end else begin
-            $display("[Timp %0t] TEST 1 ESEC: Slave nu a receptionat 0x93 (data_in: %h, sync: %b).", $time, data_in, byte_sync);
-        end
-        
-        #20;
+        // init
+        cs_n = 1;
+        mosi = 0;
+        data_out = 8'hA5;   // byte transmis spre master pe MISO
 
-        // ----------------------------------------
-        // TEST 2: Transmisie (Master RX <- Slave TX: 0xAA)
-        // ----------------------------------------
-        
-        $display("\n--- TEST 2: Citire (Slave -> Master) ---");
-        // Masterul trimite un byte 'dummy' (0x00) pentru a genera ceasul de citire
-        spi_transfer_byte(8'h00, master_rx_data); 
-        
-        // Verificare transmisie Slave
-        #10;
-        if (master_rx_data === 8'hAA) begin
-            $display("[Timp %0t] TEST 2 SUCCES: Master a citit 0xAA de la Slave.", $time);
-        end else begin
-            $display("[Timp %0t] TEST 2 ESEC: Master a citit %h, asteptat 0xAA.", $time, master_rx_data);
-        end
-        
+        rst_n = 0;
         #50;
-        
-        $finish;
+        rst_n = 1;
+
+        // ======================
+        // 1) Trimitem un byte
+        // ======================
+        #30;
+        cs_n = 0;  // activam SPI
+
+        spi_send_byte(8'h3C);  // trimitem 0x3C
+
+        @(posedge clk);
+
+        if (byte_sync == 1)
+            $display("OK: Byte reception completed.");
+        else
+            $display("ERROR: byte_sync not asserted!");
+
+        if (data_in == 8'h3C)
+            $display("OK: data_in = %h", data_in);
+        else
+            $display("ERROR: wrong data_in = %h", data_in);
+
+        // ======================
+        // 2) Observam si MISO
+        // ======================
+        #100;
+        cs_n = 1;
+
+        $display("Test finished.");
+        $stop;
     end
 
 endmodule

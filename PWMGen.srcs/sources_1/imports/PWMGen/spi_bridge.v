@@ -1,110 +1,93 @@
 module spi_bridge (
     // peripheral clock signals
-    input clk,     // Ceasul perifericului (de exemplu, 100MHz)
-    input rst_n,   // Reset activ-low
-    
+    input clk,
+    input rst_n,
     // SPI master facing signals
-    input sclk,    // Ceasul SPI (sincron cu clk)
-    input cs_n,    // Chip Select activ-low
-    input mosi,    // Master Out Slave In (Data RX)
-    output miso,   // Master In Slave Out (Data TX)
-    
-    // internal facing (catre Decodorul de Instructiuni)
-    output reg byte_sync,      // Semnal: un byte a fost primit/transferat
-    output wire [7:0] data_in, // Date primite (catre Decodor)
-    input [7:0] data_out       // Date de transmis (din Decodor)
+    input sclk,
+    input cs_n,
+    input mosi,
+    output miso,
+    // internal facing 
+    output reg byte_sync,
+    output reg [7:0] data_in,
+    input  [7:0] data_out
 );
 
-// Declaratii interne
-reg [7:0] mosi_shift_reg;     // Shift register pentru receptie (RX)
-reg [7:0] miso_shift_reg;     // Shift register pentru transmisie (TX)
-reg [2:0] bit_counter;        // Contor pentru a urmari cei 8 biti (0 la 7)
+    // sincroniz?ri pentru sclk ?i cs_n
+    reg sclk_d, sclk_dd;
+    reg cs_d, cs_dd;
 
-// ----------------------------------------------------
-// Logica de Detectare a Fronturilor SCLK (Sincron cu CLK)
-// ----------------------------------------------------
-// Aceasta inlocuieste $rose si $fell
-reg sclk_d0, sclk_d1;
-wire sclk_rise = (sclk_d1 == 1'b0) & (sclk_d0 == 1'b1); // Front Crescator
-wire sclk_fall = (sclk_d1 == 1'b1) & (sclk_d0 == 1'b0); // Front Descrescator
+    always @(posedge clk) begin
+        sclk_d  <= sclk;
+        sclk_dd <= sclk_d;
 
-// Sincronizare SCLK cu CLK si inregistrarea starii
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        sclk_d0 <= 1'b0;
-        sclk_d1 <= 1'b0;
-    end else begin
-        sclk_d0 <= sclk;
-        sclk_d1 <= sclk_d0;
+        cs_d  <= cs_n;
+        cs_dd <= cs_d;
     end
-end
 
-// ----------------------------------------------------
-// 1. Logica de Receptie (RX) - MOSI -> data_in
-// Citire pe frontul crescator (sclk_rise) - CPOL=0, CPHA=0
-// ----------------------------------------------------
+    wire sclk_rise = sclk == 1;//(sclk_d == 1);// && sclk_dd == 0);
+    wire sclk_fall = sclk == 0;//(sclk_d == 0);// && sclk_dd == 1);
+    wire cs_active = cs_n == 0;//(cs_dd == 0);
+    wire cs_start  = cs_n == 0;//(cs_dd == 1 && cs_d == 0);
 
-assign data_in = mosi_shift_reg;
+    // shift register MOSI
+    reg [7:0] mosi_shift;
+    reg [2:0] bit_cnt;
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        mosi_shift_reg <= 8'h00;
-        bit_counter    <= 3'b000;
-        byte_sync      <= 1'b0;
-    end else begin
-        // Reseteaza byte_sync in ciclul urmator dupa ce a fost activat
-        byte_sync <= 1'b0; 
+    // shift register MISO
+    reg [7:0] miso_shift;
+    reg       miso_reg;
+    assign miso = miso_reg;
 
-        if (cs_n == 1'b0) begin // CS activ (LOW)
-            
-            if (sclk_rise) begin // Citire pe frontul Crescator (Detectat de circuitul de mai sus)
-                
-                // Shift: Bitul curent de pe MOSI intra in LSB.
-                // Atentie: Daca se doreste MSB-first in shift, formula este: 
-                // mosi_shift_reg <= {mosi_shift_reg[6:0], mosi};
-                // Daca se doreste LSB-first:
-                mosi_shift_reg <= {mosi, mosi_shift_reg[7:1]};
-                
-                // Contorizare si byte_sync
-                if (bit_counter == 3'd7) begin 
-                    byte_sync <= 1'b1; // Seteaza semnalul catre Decodor
-                    bit_counter <= 3'b000; // Reseteaza contorul
+
+    // ============================
+    // Load MISO register on CS falling edge
+    // ============================
+    always @(posedge clk) begin
+        if (!rst_n)
+            miso_shift <= data_out;   // load byte to send
+    end
+
+
+    // ============================
+    // MOSI reception (posedge SCLK)
+    // ============================
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            mosi_shift <= 0;
+            bit_cnt    <= 0;
+            byte_sync  <= 0;
+            data_in    <= 0;
+        end else begin
+            byte_sync <= 0;
+
+            if (!cs_active) begin
+                bit_cnt <= 0;
+            end else if (sclk_rise) begin
+                mosi_shift <= { mosi_shift[6:0], mosi };
+
+                if (bit_cnt == 3'd7) begin
+                    data_in   <= { mosi_shift[6:0], mosi };
+                    byte_sync <= 1'b1;
+                    bit_cnt   <= 0;
                 end else begin
-                    bit_counter <= bit_counter + 3'b001;
+                    bit_cnt <= bit_cnt + 1;
                 end
             end
-        end else begin
-            // Cand CS nu este activ, reseteaza contorul 
-            bit_counter <= 3'b000; 
         end
     end
-end
 
-// ----------------------------------------------------
-// 2. Logica de Transmisie (TX) - data_out -> MISO
-// Plasare pe linie pe frontul descrescator (sclk_fall)
-// ----------------------------------------------------
 
-assign miso = miso_shift_reg[7]; // MISO este bitul curent (MSB)
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        miso_shift_reg <= 8'h00;
-    end else begin
-        if (cs_n == 1'b0) begin // CS activ (LOW)
-            
-            // Incarca datele de transmis in registrul intern la inceputul transferului
-            if (bit_counter == 3'd0 && sclk_fall) begin 
-                miso_shift_reg <= data_out;
-            end
-            
-            // Logica de Transmisie pe frontul Descrescator al SCLK
-            if (sclk_fall) begin 
-                // Shift: Decalarea pentru a trimite bitul urmator
-                miso_shift_reg <= miso_shift_reg << 1;
-            end
-        end 
+    // ============================
+    // MISO transmission (negedge SCLK)
+    // ============================
+    always @(negedge clk) begin
+        if (!rst_n) begin
+            miso_reg <= 0;
+        end else if (cs_active && sclk_fall) begin
+            miso_reg   <= miso_shift[7];
+            miso_shift <= { miso_shift[6:0], 1'b0 };
+        end
     end
-end
 
 endmodule
