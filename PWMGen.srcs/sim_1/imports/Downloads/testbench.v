@@ -43,6 +43,69 @@ module tb_top_system;
     localparam [1:0] FUNCTION_ALIGN_RIGHT            = 2'b01;
     localparam [1:0] FUNCTION_RANGE_BETWEEN_COMPARES = 2'b10;
 
+    //debug spi bridge
+    wire spimosi;
+    assign spimosi = dut.i_spi_bridge.mosi;
+    wire spimiso;
+    assign spimiso = dut.i_spi_bridge.miso;
+    wire spi_byte_sync;
+    assign spi_byte_sync = dut.i_spi_bridge.byte_sync;
+    wire [7:0] spi_data_in;
+    assign spi_data_in = dut.i_spi_bridge.data_in;
+    wire [7:0] spi_data_out;
+    assign spi_data_out = dut.i_spi_bridge.data_out;
+    
+    //debug instr_dcd
+    wire dcd_byte_sync;
+    assign dcd_byte_sync = dut.i_instr_dcd.byte_sync;
+    wire [7:0] dcd_data_in;
+    assign dcd_data_in = dut.i_instr_dcd.data_in;
+    wire [7:0] dcd_data_out;
+    assign dcd_data_out = dut.i_instr_dcd.data_out;
+    wire dcd_read;
+    assign dcd_read = dut.i_instr_dcd.read;
+    wire dcd_write;
+    assign dcd_write = dut.i_instr_dcd.write;
+    wire [5:0] dcd_addr;
+    assign dcd_addr = dut.i_instr_dcd.addr;
+    wire [7:0] dcd_data_read;
+    assign dcd_data_read = dut.i_instr_dcd.data_read;
+    wire [7:0] dcd_data_write;
+    assign dcd_data_write = dut.i_instr_dcd.data_write;
+    
+    
+    // debug regs
+    wire regs_read;
+    assign regs_read = dut.i_regs.read;
+    wire regs_write;
+    assign regs_write = dut.i_regs.write;
+    wire [5:0] regs_addr;
+    assign regs_addr = dut.i_regs.addr;
+    wire [7:0] regs_data_read;
+    assign regs_data_read = dut.i_regs.data_read;
+    wire [7:0] regs_data_write;
+    assign regs_data_write = dut.i_regs.data_write;
+    wire [15:0] regs_counter_val;
+    assign regs_counter_val = dut.i_regs.counter_val;
+    wire [15:0] regs_period;
+    assign regs_period = dut.i_regs.period;
+    wire regs_en;
+    assign regs_en = dut.i_regs.en;
+    wire regs_count_reset;
+    assign regs_count_reset = dut.i_regs.count_reset;
+    wire regs_upnotdown;
+    assign regs_upnotdown = dut.i_regs.upnotdown;
+    wire [7:0] regs_prescale;
+    assign regs_prescale = dut.i_regs.prescale;
+    wire regs_pwm_en;
+    assign regs_pwm_en = dut.i_regs.pwm_en;
+    wire [7:0] regs_functions;
+    assign regs_functions = dut.i_regs.functions;
+    wire [15:0] regs_compare1;
+    assign regs_compare1 = dut.i_regs.compare1;
+    wire [15:0] regs_compare2;
+    assign regs_compare2 = dut.i_regs.compare2;
+    
     initial begin
         clk = 1'b0;
         forever #(CLK_HALF) clk = ~clk;
