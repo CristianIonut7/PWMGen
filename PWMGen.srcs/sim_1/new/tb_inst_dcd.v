@@ -1,21 +1,27 @@
-`timescale 1ns / 1ps
+`default_nettype none
+`timescale 1ns/1ns
 
-module instr_dcd_tb;
+module tb_dcd_exact;
 
     // --- 1. Semnale ---
     reg clk;
     reg rst_n;
+    
+    // Intrari (Simuleaza iesirea din SPI Bridge)
     reg byte_sync;
-    reg [7:0] data_in;      // Ce vine de la SPI
-    reg [7:0] data_read;    // Ce vine de la Registri (simulat)
+    reg [7:0] data_in;
+    
+    // Intrari (Simuleaza citirea din Registri)
+    reg [7:0] data_read;
 
-    wire [7:0] data_out;    // Ce pleaca spre SPI
+    // Iesiri monitorizate
     wire read;
     wire write;
     wire [5:0] addr;
-    wire [7:0] data_write;  // Ce pleaca spre Registri
+    wire [7:0] data_write;
+    wire [7:0] data_out;
 
-    // --- 2. Instantiere DUT (Device Under Test) ---
+    // --- 2. Instantiere instr_dcd (DUT) ---
     instr_dcd uut (
         .clk(clk),
         .rst_n(rst_n),
@@ -29,104 +35,148 @@ module instr_dcd_tb;
         .data_write(data_write)
     );
 
-    // --- 3. Generator de Ceas ---
+    // --- 3. Generare Ceas (100MHz - ca in Top) ---
     initial begin
         clk = 0;
         forever #5 clk = ~clk; // 10ns perioada
     end
 
-    // --- 4. Task pentru a simula primirea unui octet prin SPI ---
-    task send_spi_byte(input [7:0] byte_val);
+    // Parametri (Aceiasi ca in Top)
+    localparam [5:0] REG_PERIOD        = 6'h00;
+    localparam [5:0] REG_COUNTER_EN    = 6'h02;
+    localparam [5:0] REG_COMPARE1      = 6'h03;
+    localparam [5:0] REG_COMPARE2      = 6'h05;
+    localparam [5:0] REG_COUNTER_RESET = 6'h07;
+    localparam [5:0] REG_COUNTER_VAL   = 6'h08;
+    localparam [5:0] REG_PRESCALE      = 6'h0A;
+    localparam [5:0] REG_PWM_EN        = 6'h0C;
+    localparam [5:0] REG_FUNCTIONS     = 6'h0D;
+    localparam [1:0] FUNCTION_ALIGN_LEFT = 2'b00;
+
+    // --- 4. Task care imita EXACT 'spi_write_reg' din Top ---
+    // In Top, un byte dureaza 8 * 100ns = 800ns sa fie trimis.
+    // Deci intre byte_sync 1 si byte_sync 2 trebuie sa treaca aprox 800ns.
+    task mimic_top_write;
+        input [5:0] target_addr;
+        input [7:0] target_data;
+        
+        reg [7:0] cmd_byte;
         begin
+            cmd_byte = {1'b1, 1'b1, target_addr}; // Calcul Comanda (Write)
+
+            $display("--- Mimic Write: Addr 0x%h, Data 0x%h ---", target_addr, target_data);
+
+            // 1. BRIDGE-ul termina primul octet (Comanda)
             @(posedge clk);
-            data_in = byte_val;
-            byte_sync = 1;     // Pulsam sincronizarea
+            data_in = cmd_byte;
+            byte_sync = 1;
             @(posedge clk);
-            byte_sync = 0;     // Oprim pulsul
-            #1; // Mic delay
+            byte_sync = 0;
+
+            // VERIFICARE: Decodorul NU trebuie sa scrie acum!
+            if (write) begin
+                $display("   [FAIL CRITIC] Decodorul a scris la primirea Comenzii (0x%h)!", cmd_byte);
+                $stop; 
+            end
+
+            // 2. PAUZA DE TRANSMISIE (Simulam timpul cat Top-ul trimite al doilea byte)
+            // In Top: spi_transfer_byte dureaza ~800ns.
+            #800; 
+
+            // 3. BRIDGE-ul termina al doilea octet (Datele)
+            @(posedge clk);
+            data_in = target_data;
+            byte_sync = 1;
+            
+            // VERIFICARE: Acum trebuie sa scrie!
+            // Verificam imediat dupa activarea byte_sync
+            #1; 
+            if (write === 1 && data_write === target_data && addr === target_addr)
+                $display("   [PASS] Scriere Reusita: Addr=0x%h, Data=0x%h", addr, data_write);
+            else
+                $display("   [FAIL] Nu a scris corect! Write=%b, Addr=0x%h, Data=0x%h", write, addr, data_write);
+
+            @(posedge clk);
+            byte_sync = 0;
+            
+            // Pauza intre tranzactii (ca in Top: #(4*CLK_HALF))
+            #200; 
         end
     endtask
 
-    // --- 5. Scenariul de Test ---
+    // --- 5. Task care imita EXACT 'spi_read_reg' din Top ---
+    task mimic_top_read;
+        input [5:0] target_addr;
+        input [7:0] simulated_val;
+        
+        reg [7:0] cmd_byte;
+        begin
+            cmd_byte = {1'b0, 1'b1, target_addr}; // Calcul Comanda (Read)
+            data_read = simulated_val; // Simulam ca registrul are valoarea asta
+
+            $display("--- Mimic Read: Addr 0x%h (Expect 0x%h) ---", target_addr, simulated_val);
+
+            // 1. BRIDGE-ul termina primul octet (Comanda)
+            @(posedge clk);
+            data_in = cmd_byte;
+            byte_sync = 1;
+            @(posedge clk);
+            byte_sync = 0;
+
+            // Decodorul are timp sa activeze semnalul READ acum
+            #10;
+            if (read === 1 && data_out === simulated_val)
+                $display("   [PASS] Read Activ: data_out = 0x%h", data_out);
+            else
+                $display("   [FAIL] Read Inactiv sau Date Gresite! Read=%b, Out=0x%h", read, data_out);
+
+            // 2. PAUZA DE TRANSMISIE (Simulam timpul cat Top-ul citeste byte-ul dummy)
+            #800;
+
+            // 3. BRIDGE-ul termina al doilea octet (Dummy 0x00 trimis de Master)
+            @(posedge clk);
+            data_in = 8'h00; 
+            byte_sync = 1; 
+            @(posedge clk);
+            byte_sync = 0; // Aici decodorul revine la starea CMD
+
+            #200;
+        end
+    endtask
+
+    // --- 6. Scenariul de Test (Copia Fidela a Top-ului) ---
     initial begin
-        // Configurare Waveform
-        $dumpfile("instr_dcd_dump.vcd");
-        $dumpvars(0, instr_dcd_tb);
+        $dumpfile("dcd_exact.vcd");
+        $dumpvars(0, tb_dcd_exact);
 
-        // Initializare
-        rst_n = 0;
-        byte_sync = 0;
-        data_in = 0;
-        data_read = 0;
+        // Reset
+        rst_n = 0; byte_sync = 0; data_in = 0; data_read = 0;
+        #200; // Reset lung ca in Top
+        rst_n = 1; 
+        #100;
 
-        $display("--- Start Test instr_dcd ---");
-        
-        // Eliberare Reset
-        #20;
-        rst_n = 1;
-        #10;
+        $display("START TB_DCD_EXACT");
 
-        // ============================================================
-        // TEST 1: SCRIERE (WRITE)
-        // Scriem valoarea 0x55 la Adresa 0x02 (De ex: Enable)
-        // Comanda: Write(1) | High(0) | Addr(000010) = 10000010 = 0x82
-        // ============================================================
-        $display("\n[T1] Start Tranzactie WRITE la adresa 0x02");
-        
-        // Pas 1: Trimitem COMANDA
-        send_spi_byte(8'h82); 
-        
-        // Verificam imediat dupa comanda (Inca NU trebuie sa scrie)
-        #5; 
-        if (write == 1) $display("EROARE GRAVA: Write activat prematur (dupa primul octet)!");
-        else $display("OK: Write este 0 dupa comanda (asteapta datele).");
+        // Executam exact secventa din tb_top_system
+        mimic_top_write(REG_PERIOD,     8'd7);
+        mimic_top_write(REG_PRESCALE,   8'd0);
+        mimic_top_write(REG_COMPARE1,   8'd3);
+        mimic_top_write(REG_COUNTER_EN, 8'd1); // Aici era problema cu 0xC2
+        mimic_top_write(REG_PWM_EN,     8'd1);
+        mimic_top_write(REG_FUNCTIONS,  {6'b0, FUNCTION_ALIGN_LEFT});
 
-        if (addr == 6'h02) $display("OK: Adresa latch-uita corect: 0x02");
+        mimic_top_write(REG_COUNTER_RESET, 8'd1);
+        mimic_top_write(REG_COUNTER_RESET, 8'd0);
 
-        // Simulam pauza dintre octeti (SPI-ul e lent)
-        #50; 
+        // Test Citire
+        mimic_top_read(REG_COUNTER_VAL, 8'h55); 
 
-        // Pas 2: Trimitem DATELE
-        $display("[T1] Trimitere Date: 0x55");
-        send_spi_byte(8'h55);
+        // Update-uri ulterioare
+        mimic_top_write(REG_COMPARE1, 8'd2);
+        mimic_top_write(REG_COMPARE2, 8'd6);
+        mimic_top_write(REG_FUNCTIONS, {6'b0, 2'b10});
 
-        // Verificam daca scrie acum
-        #1; // Imediat dupa ceas
-        if (write == 1 && data_write == 8'h55) 
-            $display("SUCCES: Write activat corect cu datele 0x55.");
-        else 
-            $display("EROARE: Write nu s-a activat sau date gresite. W=%b, D=0x%h", write, data_write);
-
-
-        // ============================================================
-        // TEST 2: CITIRE (READ)
-        // Citim de la Adresa 0x0A (Prescale)
-        // Comanda: Read(0) | Low(0) | Addr(001010) = 00001010 = 0x0A
-        // ============================================================
-        #50;
-        $display("\n[T2] Start Tranzactie READ de la adresa 0x0A");
-
-        // Simulam ca Registrii au valoarea 0x99 la acea adresa
-        data_read = 8'h99; 
-
-        // Pas 1: Trimitem COMANDA
-        send_spi_byte(8'h0A);
-
-        // In modulul tau, Read se activeaza in starea DATA (dupa comanda)
-        #10; 
-        if (read == 1) 
-            $display("OK: Semnalul Read este activ.");
-        
-        if (data_out == 8'h99) 
-            $display("SUCCES: Data_out a preluat valoarea 0x99.");
-        else 
-            $display("EROARE: Data_out incorect: 0x%h", data_out);
-
-        // Pas 2: Al doilea byte "dummy" de la Master (pentru a tine ceasul)
-        send_spi_byte(8'h00); 
-
-        #50;
-        $display("\n--- Final Test ---");
+        $display("FINALIZAT");
         $finish;
     end
 
