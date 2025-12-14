@@ -125,6 +125,9 @@ module regs (
                 ADDR_VAL_H:    data_read = counter_val[15:8];
                 ADDR_PWM_EN:   data_read = {7'h00, r_pwm_en};
                 
+                ADDR_UPDOWN:   data_read = {7'h00, r_upnotdown};
+                ADDR_FUNCTIONS: data_read = r_functions;
+                
                 default:       data_read = 8'h00; // Returneaz? 0x00 pentru adrese neimplementate
             endcase
         end
