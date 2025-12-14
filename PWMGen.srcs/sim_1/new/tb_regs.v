@@ -9,10 +9,8 @@ module tb_regs_verify;
     reg [5:0] addr;
     reg [7:0] data_write;
     
-    // Inputs simulate
     reg [15:0] counter_val;
 
-    // Outputs (Toate porturile de iesire esentiale)
     wire [7:0] data_read;
     wire [15:0] period;
     wire en;
@@ -22,9 +20,8 @@ module tb_regs_verify;
     wire pwm_en;
     wire [7:0] functions;
     wire [15:0] compare1;
-    wire [15:0] compare2; // <--- Acesta lipsea cel mai probabil
+    wire [15:0] compare2;
 
-    // Instantiere CU TOATE PORTURILE CONECTATE
     regs uut (
         .clk(clk),
         .rst_n(rst_n),
@@ -45,13 +42,11 @@ module tb_regs_verify;
         .compare2(compare2)
     );
 
-    // Ceas
     initial begin
         clk = 0;
         forever #5 clk = ~clk;
     end
 
-    // Task scriere simpla (un puls de ceas)
     task write_reg(input [5:0] a, input [7:0] d);
         begin
             @(posedge clk);
@@ -62,7 +57,7 @@ module tb_regs_verify;
             write = 0;
             addr = 0;
             data_write = 0;
-            #1; // Delay pt propagare
+            #1;
         end
     endtask
 
@@ -75,37 +70,29 @@ module tb_regs_verify;
 
         $display("--- START REGS CHECK ---");
 
-        // 1. TEST CRITIC: ENABLE (0x02)
         write_reg(6'h02, 8'h01);
         
         if (en === 1) $display("[PASS] Enable activat corect cu 0x01");
         else          $display("[FAIL] Enable a ramas 0! (Value: %b)", en);
 
-        // 2. TEST CRITIC: PWM_EN (0x0C)
         write_reg(6'h0C, 8'h01);
         if (pwm_en === 1) $display("[PASS] PWM_EN activat corect");
         else              $display("[FAIL] PWM_EN Fail (Value: %b)", pwm_en);
 
-        // 3. TEST PERIOD (16 bit: 0xAAFF)
-        write_reg(6'h00, 8'hFF); // Low byte
-        write_reg(6'h01, 8'hAA); // High byte
+        write_reg(6'h00, 8'hFF);
+        write_reg(6'h01, 8'hAA);
         
         if (period === 16'hAAFF) $display("[PASS] Period asamblat corect: 0xAAFF");
         else                     $display("[FAIL] Period gresit: 0x%h (Expected: 0xAAFF)", period);
 
-        // 4. TEST COMPARE2 (16 bit: 0x1234)
-        write_reg(6'h05, 8'h34); // Low byte
-        write_reg(6'h06, 8'h12); // High byte
+        write_reg(6'h05, 8'h34);
+        write_reg(6'h06, 8'h12);
         
         if (compare2 === 16'h1234) $display("[PASS] Compare2 asamblat corect: 0x1234");
         else                       $display("[FAIL] Compare2 gresit: 0x%h (Expected: 0x1234)", compare2);
 
-        // 5. TEST RESET PULSE (Auto clear)
-        write_reg(6'h07, 8'h01); // Trigger reset
+        write_reg(6'h07, 8'h01);
 
-        // Verificarea auto-clear se face verificand daca se stinge in ciclul urmator
-        // Write_reg deja a terminat pulsul si a pus write=0.
-        // Daca r_count_reset nu a fost rescris, el ar trebui sa se fi stins in regs.v (r_count_reset <= 1'b0;)
         @(posedge clk);
         #1;
         if (count_reset === 0) $display("[PASS] Count Reset Pulse s-a stins singur (Auto-Clear)");

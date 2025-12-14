@@ -49,7 +49,7 @@ spi_bridge i_spi_bridge (
     .rst_n(rst_n),
     .sclk(sclk),
     .cs_n(cs_n),
-    .miso(mosi), //invers
+    .miso(mosi), //inversam mosi miso
     .mosi(miso),
     .byte_sync(byte_sync), //adaugat
     .data_in(data_in), //adaugat
@@ -59,7 +59,7 @@ spi_bridge i_spi_bridge (
 instr_dcd i_instr_dcd (
     .clk(clk),
     .rst_n(rst_n),
-    .byte_sync(byte_sync), //modificat
+    .byte_sync(byte_sync), //modificat din .byte_sync()
     .data_in(data_in),
     .data_out(data_out),
     .read(read),

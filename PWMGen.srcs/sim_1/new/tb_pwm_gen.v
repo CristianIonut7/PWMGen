@@ -22,7 +22,6 @@
 `timescale 1ns / 1ps
 
 module tb_pwm_gen;
-    //Declare variables
     reg clk;
     reg rst_n;
     reg pwm_en;
@@ -34,7 +33,6 @@ module tb_pwm_gen;
 
     wire pwm_out;
 
-    //Instantiation
     pwm_gen dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -47,7 +45,6 @@ module tb_pwm_gen;
         .pwm_out(pwm_out)
     );
     
-    //monitoring internal signals
     wire [15:0] c1;
     wire [15:0] c2;
     wire [7:0] func; 
@@ -56,13 +53,11 @@ module tb_pwm_gen;
     assign func = dut.active_functions;
     assign safe = dut.safe_to_update;
     
-    //clock
     initial begin
         clk = 0;
         forever #5 clk = ~clk;
     end
     
-    //counter simulation
     always @(posedge clk) begin
         if (!rst_n) begin
             count_val <= 0;
@@ -75,9 +70,7 @@ module tb_pwm_gen;
     end
 
 
-    //the bock for tests
     initial begin
-        //initial setup
         rst_n = 0;
         pwm_en = 0;
         functions = 0;
@@ -87,29 +80,24 @@ module tb_pwm_gen;
         count_val = 0;
         
         #20;
-        //start
         rst_n = 1;
         pwm_en = 1;
         
-        //Test 1: alligned left, compare1 = 3
         functions = 8'h00; 
         compare1 = 16'd3;
         
         #200;
         
      
-        //Test 2: alligned right, compare1 = 3
         functions = 8'h01;
         compare1 = 16'd3;
 
         #200;
-        //Test 3: unalligned, compare1 = 2, compare2 = 6
         functions = 8'h02;
         compare1 = 16'd2;
         compare2 = 16'd6;
 
         #200;
-        //Test 4: fast parameters change, checking shadow register implementation
         functions = 8'h00;
         compare1 = 16'd4;
         
