@@ -52,7 +52,7 @@ module pwm_gen (
             end 
             else begin
                 case (eff_func)
-                    // Allign left
+                    // Align left
                     2'b00: begin 
                         // if compare1 = 0 (Test 5)
                         if (eff_comp1 == 0) 
@@ -63,7 +63,7 @@ module pwm_gen (
                             pwm_out <= 1'b0;
                     end
 
-                    // Allign right
+                    // Align right
                     2'b01: begin 
                         if (count_val >= eff_comp1)
                             pwm_out <= 1'b1;
@@ -71,7 +71,7 @@ module pwm_gen (
                             pwm_out <= 1'b0;
                     end
 
-                    // Not alligned
+                    // Unaligned
                     2'b10: begin
                         // Interval: [compare1, compare2)
                         if ((count_val >= eff_comp1) && (count_val < eff_comp2))
