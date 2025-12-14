@@ -18,7 +18,7 @@ Sistemul este compus din 5 module principale conectate in top-level. Fluxul de d
 
 Proiectul a fost realizat in echipa, sarcinile fiind impartite astfel:
 
-* **Pleseanu Ionut-Cristian:** Implementare modulelor de executie: **Counter** si **PWM Generator**.
+* **Pleseanu Ionut-Cristian:** Implementare module: **Counter** si **PWM Generator**.
 * **Lican Stefanita-Ionel-Aurel:** Implementare module **SPI Bridge** si **Instruction Decoder**.
 * **Voicu Alexandru-Iulian:** Implementare modul **Registers**.
 
@@ -29,290 +29,118 @@ Proiectul a fost realizat in echipa, sarcinile fiind impartite astfel:
 ### 1. SPI Bridge (spi_bridge.v)
 *Responsabil: Lican Stefanita*
 
-Acest modul reprezinta interfata de comunicatie dintre periferic si mediul extern folosind protocolul SPI. Rolul lui este sa sincronizeze bitii primiti de pe MOSI, sa genereze octeti validi pentru sistemul intern si sa trimita inapoi date catre master prin MISO.
+Acest modul realizeaza conversia datelor seriale (MOSI) in format paralel pentru uz intern si invers pentru transmisie (MISO). Versiunea finala este optimizata pentru latenta minima ("Low Latency"), asigurand compatibilitatea stricta cu timing-urile testbench-ului.
 
 **Detalii de implementare:**
 
-* **Sincronizarea Semnalelor Externe:**
-    Semnalele SPI (`SCLK`, `CS`, `MOSI`) sunt nesincrone fata de ceasul intern al perifericului. Pentru a preveni metastabilitatea, modulul utilizeaza registre de sincronizare pe doua niveluri:
-    - `sclk_sync[1:0]`
-    - `cs_sync[1:0]`
-    - `mosi_sync[1:0]`
-    
-    Dupa sincronizare, logica interna lucreaza doar cu semnale stabile.
+* **Sincronizare Directa pe SCLK:**
+    Pentru a evita erorile de esantionare cauzate de decalajele dintre ceasul de sistem (`clk`) si ceasul SPI (`sclk`) in simulare, modulul utilizeaza direct fronturile `sclk` pentru procesarea datelor.
+    * **Receptie (RX):** Datele de pe MOSI sunt esantionate pe **frontul crescator** (`posedge sclk`).
+    * **Transmisie (TX):** Datele pe MISO sunt schimbate pe **frontul descrescator** (`negedge sclk`), conform modului SPI Mode 0 (CPOL=0, CPHA=0).
 
-* **Detectarea Fronturilor de Clock:**
-    Protocolul SPI cu `CPOL = 0` si `CPHA = 0` necesita:
-    - Preluarea datelor pe **frontul crescator** al lui `SCLK`
-    - Deplasarea datelor catre MISO pe **frontul descrescator**
-    
-    Pentru acest lucru se genereaza semnalele:
-    - `sclk_rise` – detecteaza tranzitia 0 → 1
-    - `sclk_fall` – detecteaza tranzitia 1 → 0
-    
-    Aceste semnale permit implementarea corecta a fluxului MOSI/MISO.
+* **Logica de "Byte Sync":**
+    Modulul genereaza un semnal critic numit `byte_sync`. Acesta devine activ (`HIGH`) exact in momentul in care al 8-lea bit al unui octet a fost receptionat complet. Acest semnal este esential pentru a notifica etajele urmatoare (Decoderul) ca un nou octet de date este valid si gata de procesare.
 
-* **Shift Register pentru Receptie (MOSI):**
-    La fiecare **front crescator** al lui `SCLK`, bitul curent de pe linia MOSI este capturat:
-    ```
-    shift_in <= {shift_in[6:0], MOSI_bit};
-    ```
-    Dupa 8 capturi consecutive, modulul semnaleaza ca un octet complet a fost receptionat:
-    - `rx_valid = 1` pentru un singur ciclu
-    - `rx_data[7:0]` contine octetul final
-
-    Acest octet este transmis catre modulul **Instruction Decoder**.
-
-* **Shift Register pentru Transmitere (MISO):**
-    In momentul in care `CS` devine 0, se incarca in registrul de transmitere octetul primit de la modulul **Registers**:
-    ```
-    shift_out <= tx_data;
-    ```
-    Pe fiecare **front descrescator** al lui `SCLK`, registrul deplaseaza bitul urmator catre MISO:
-    ```
-    shift_out <= {shift_out[6:0], 1'b0};
-    ```
-    Primul bit transmis este intotdeauna MSB, conform standardului SPI.
-
-* **Gestionarea semnalului CS:**
-    Cand `CS = 1`:
-    - transmisia si receptia sunt oprite
-    - registrele interne sunt resetate
-    - numaratoarele se golesc
-    
-    Cand `CS = 0`:
-    - incepe un nou cadru SPI
-    - registrele de shift sunt activate
-    - se numara cei 8 biti ai transferului
-
-* **Interfata Catre Sistemul Intern:**
-    SPI Bridge furnizeaza:
-    - `rx_data[7:0]` – octet receptionat
-    - `rx_valid` – puls de confirmare
-    - `tx_data[7:0]` – octet de trimis
-    - `tx_load` – semnal de incarcare
-
-    Acestea conecteaza modulul la **Instruction Decoder** si **Registers**.
+* **Mecanismul de Shift Register si Contor:**
+    Utilizeaza un contor intern de 3 biti care urmareste progresul octetului curent (0..7).
+    * La receptia ultimului bit (index 7), datele din registrul de shiftare sunt copiate ("latch") in registrul de iesire `data_in`, asigurand stabilitatea acestora pe durata procesarii de catre sistem.
+    * Resetarea contorului se face asincron prin semnalul `CS_N` (Chip Select), garantand ca fiecare tranzactie incepe dintr-o stare cunoscuta.
 
 ---
 
 ### 2. Instruction Decoder (instr_dcd.v)
 *Responsabil: Lican Stefanita*
 
-Acest modul interpreteaza datele receptionate prin SPI Bridge si genereaza semnalele necesare modulului Registers. Functioneaza ca un FSM (Finite State Machine) care proceseaza byte-ii receptionati si decide operatiile perifericului: citire sau scriere in registri.
+Modulul actioneaza ca "creierul" interfetei de comunicatie, interpretand fluxul de octeti venit de la SPI Bridge. Implementarea se bazeaza pe o **Masina de Stari Finita (FSM)** robusta pentru a distinge clar intre comenzi si date.
+
+**Detalii de implementare:**
+
+* **Arhitectura FSM (CMD vs DATA):**
+    Pentru a rezolva problema confuziei dintre comanda (ex: `0xC2`) si date, decodorul implementeaza doua stari distincte:
+    1.  **STATE_CMD:** Asteapta primul puls `byte_sync`. Cand acesta soseste, octetul este interpretat ca o **Comanda** (contine adresa si tipul operatiei RW). Nu se efectueaza nicio scriere in registri in aceasta faza.
+    2.  **STATE_DATA:** Asteapta al doilea puls `byte_sync`. Cand acesta soseste, octetul este interpretat ca **Date Utile** (payload). Doar in acest moment se activeaza semnalul `write` catre registri.
+
+* **Separarea Fazelor de Executie:**
+    * In starea de Comanda, modulul doar memoreaza adresa (`addr`) si directia transferului (`read/write`).
+    * Scrierea efectiva in registri (`write = 1`) are loc exclusiv in starea de Date, eliminand complet scrierile eronate cauzate de interpretarea gresita a octetului de adresa.
+
+* **Gestionarea Citirii (Read Operations):**
+    Pentru operatiile de citire, semnalul `read` este activat imediat ce FSM-ul tranziteaza in starea de date, permitand modulului de registre sa plaseze informatia pe magistrala in timp util pentru a fi transmisa inapoi prin SPI.
 
 ---
-
-## Detalii de implementare
-
-### 1. Faza de Setup
-Primul byte dintr-un transfer SPI contine informatiile pentru operatiune. Structura byte-ului este urmatoarea:
-
-| Bit   | Denumire     | Semnificatie |
-|-------|--------------|--------------|
-| 7     | Read/Write   | 1 = scriere (Write), 0 = citire (Read) |
-| 6     | High/Low     | 1 = MSB [15:8], 0 = LSB [7:0] |
-| 5:0   | Address      | Adresa registrului tinta |
-
-- Modul receptioneaza byte-ul de la SPI Bridge (`rx_data`)  
-- FSM-ul retine valorile pentru `read/write`, `high/low` si `address`  
-- Aceasta faza stabileste daca urmatorul transfer va fi citire sau scriere si zona registrului tinta  
-
-### 2. Faza de Data
-In aceasta faza se transmit sau se receptioneaza datele efective:
-
-- Datele sunt pe 8 biti, chiar daca registrii din modul Registers sunt pe 16 biti  
-- Pentru scriere, FSM-ul trimite byte-ul catre registru folosind semnalele `write_enable` si `write_high_low`  
-- Pentru citire, FSM-ul solicita registrului byte-ul corespunzator si il transmite inapoi catre SPI Bridge prin `tx_data`  
-- Transferul este sincronizat cu semnalele `rx_valid` si `tx_load` de la SPI Bridge  
-
-### 3. Logica FSM si sincronizare
-- FSM-ul trece din faza Setup in faza Data dupa receptionarea primului byte  
-- Fiecare byte receptionat genereaza un puls intern (`rx_ready`) care declanseaza logica FSM  
-- Fiecare transfer este efectuat complet, bit cu bit, fara pierderi de date  
-
-### 4. Protectia integritatii datelor
-- Se utilizeaza registre tampon pentru a retine temporar datele receptionate  
-- FSM-ul asigura ca niciun byte nu este pierdut sau suprascris  
-- Daca `CS = 1`, FSM-ul se reseteaza si asteapta urmatorul transfer SPI  
-
-Aceasta arhitectura permite perifericului sa interpreteze corect comenzile master-ului si sa efectueze operatiile pe registri fara erori sau pierderi de date.
-
-
-
 
 ### 3. Registers (regs.v)
-*Responsabil: Voicu Alexandru*💾
+*Responsabil: Voicu Alexandru*
 
-Modulul **regs.v** reprezintă mediul de stocare și configurare pentru întreg perifericul PWM. Acesta conectează decodorul de instrucțiuni cu modulele Counter și PWM Generator, asigurând o interfață coerentă, stabilă și sincronă pe o magistrală de date de doar 8 biți. Rolul său este de a primi comenzi de scriere/citire prin SPI, de a actualiza registre interne și de a furniza modulelor hardware valorile necesare funcționării.
+Acest modul gestioneaza harta de memorie a perifericului, realizand legatura intre magistrala de 8 biti (SPI) si registrele interne de 16 biti sau 1 bit necesare functionarii PWM-ului.
 
----
+**Detalii de implementare:**
 
-### **Structura Generală a Registrelor**
+* **Maparea Memoriei (Byte Addressing):**
+    Deoarece registrele de control (ex: `PERIOD`, `COMPARE`) sunt pe 16 biti, acestea sunt impartite in doua adrese de 8 biti (Low Byte si High Byte). Modulul reconstruieste valorile de 16 biti stocandu-le in registre interne (`r_period`, `r_compare1`, etc.) pe masura ce octetii sosesc.
 
-Registrele implementate includ:
+* **Manipularea Registrelor de 1 Bit:**
+    Pentru registrele de control de tip flag (`ENABLE`, `PWM_EN`, `UPNOTDOWN`), modulul extrage doar LSB-ul (`data_write[0]`) din octetul de date primit. Aceasta asigura ca, de exemplu, o valoare `0x01` venita de la SPI activeaza corect semnalul, fara a fi afectata de bitii superiori.
 
-- **PERIOD (period_low, period_high)** – definește perioada PWM.
-- **COMPARE1 / COMPARE2 (low/high)** – pragurile de comutare PWM.
-- **PRESCALE** – divizorul de frecvență al contorului.
-- **UPDOWN** – modul de numărare (în sus / în jos).
-- **FUNCTIONS** – modul de generare PWM (Aligned Left/Right, Unaligned).
-- **COUNTER_RESET** – scriere = impuls pentru resetarea contorului.
-- **COUNTER_VAL (low/high)** – valoarea curentă a contorului (read-only).
+* **Resetare Automata (Self-Clearing):**
+    Registrul `COUNTER_RESET` (Adresa `0x07`) implementeaza o logica de tip "auto-clear". La scrierea valorii `1`, semnalul de reset catre counter devine activ pentru un singur ciclu de ceas, revenind automat la `0`. Acest lucru previne blocarea numaratorului in starea de reset.
 
-Toate registrele pe 16 biți sunt mapate pe câte **două adrese consecutive**.
+* **Acces Read-Only Transparent:**
+    Pentru citirea valorii curente a numaratorului (`COUNTER_VAL`), modulul nu stocheaza valoarea, ci o preia combinatoriu direct de la intrarea `counter_val`. Astfel, citirea prin SPI reflecta intotdeauna starea in timp real a sistemului.
 
 ---
-
-### **Adresarea pe Octeți (Byte Addressing)**
-
-Magistrala internă este pe **8 biți**, în timp ce multe dintre registre necesită **16 biți** pentru configurare. Astfel, structura este:
-
-- `Address` → octetul Low  
-- `Address + 1` → octetul High  
-
-Exemple:
-
-- `0x00` → PERIOD_LOW  
-- `0x01` → PERIOD_HIGH  
-- `0x02` → COMPARE1_LOW  
-- `0x03` → COMPARE1_HIGH  
-
-Această abordare:
-
-1. Permite un transfer gradual al valorilor dinspre SPI.
-2. Previne conflictele de sincronizare între byte-ul low și high.
-3. Simplifică decodorul de instrucțiuni, care trimite mereu doar 8 biți.
-
----
-
-### **Organizarea Internă: Două Blocuri Always Complementare**
-
-#### **1. Bloc Secvențial (posedge clk / negedge rst_n)**  
-Acest bloc modelează registrele hardware reale.
-
-Responsabilități:
-
-- Aplicarea **resetului asincron**.
-- Realizarea operațiilor de **scriere (write_enable)**.
-- Actualizarea doar a octetului relevant în funcție de adresă.
-- Manipularea logicii pentru registrele speciale (ex: COUNTER_RESET).
-
-Caracteristici:
-
-- Folosește **atribuiri non-blocante (`<=`)**, pentru a reflecta modul de funcționare al flip-flop-urilor.
-- Garantează că valorile sunt stabilizate pentru ciclul următor de ceas.
-
----
-
-#### **2. Bloc Combinatoriu (always @*)**  
-Acest bloc modelează un multiplexor mare responsabil de **citirea registrelor**.
-
-Responsabilități:
-
-- Selectarea corectă a valorii de trimis pe `data_read`, în funcție de adresă.
-- Împărțirea registrelor pe 16 biți în octeți Low/High.
-- Expansiunea registrelor pe 1 bit în format pe 8 biți.
-- Accesarea specială a registrului read-only `COUNTER_VAL`.
-
-Caracteristici:
-
-- Nu include operații de scriere sau memorare.
-- Răspunsul este combinatoriu și nu depinde de ceas.
-- Registrele write-only returnează `8'h00`.
-
----
-
-### **Gestionarea Resetului Contorului (COUNTER_RESET)**
-
-Registrul `COUNTER_RESET` (adresa `0x07`) este implementat ca un mecanism special pentru generarea unui **impuls de reset pe un singur ciclu de ceas**, indiferent de valoarea scrisă.
-
-Comportament:
-
-1. Când se scrie în adresa `0x07`, blocul secvențial setează `count_reset <= 1`.
-2. La ciclul următor de ceas, semnalul este resetat automat la `0`.
-3. Nu există stocare permanentă – este un registru virtual, util pentru declanșarea acțiunilor momentane.
-
-Avantaje:
-
-- Reset clar și controlat.
-- Nu poate rămâne blocat în starea „activ”.
-- Evită problemele din sincronizarea cu modul Counter.
-
----
-
-### **Citirea Valoarii Contorului (COUNTER_VAL)**
-
-Registrele `0x08` și `0x09` sunt **Read-Only**. Ele nu folosesc memorie internă:
-
-- În loc să stocheze valori, logica combinatorie citește direct intrarea `counter_val[15:0]`.
-- Datele citite reflectă exact starea contorului în ciclul curent de ceas.
-- Se elimină complet riscul de dezaliniere între contor și modulul Registers.
-
-Această abordare este ideală pentru monitorizarea în timp real a perifericului.
-
----
-
-### **Rezumat al Fluxului de Operare**
-
-1. SPI trimite un byte de scriere.
-2. Instruction Decoder furnizează `addr`, `data_write`, `write_enable`.
-3. Blocul secvențial actualizează registrele interne.
-4. Modulele Counter și PWM Generator folosesc valorile stabile.
-5. La cererea de citire, blocul combinatoriu plasează pe magistrală octetul corespunzător.
-
-Acest design asigură:
-
-- izolare clară între logica de comunicare și logica funcțională,
-- consistență între byte-ul HIGH și LOW,
-- comportament determinist și sigur pentru modularea PWM.
-
-
-
 
 ### 4. Counter (counter.v)
 *Responsabil: Pleseanu Cristian*
 
-Acest modul reprezinta baza de timp a perifericului. Implementarea a urmarit doua obiective principale: scalarea corecta a timpului si stabilitatea la schimbarea parametrilor.
+Modulul reprezinta baza de timp a sistemului, responsabil pentru generarea secventei de numarare scalata conform prescaler-ului.
 
 **Detalii de implementare:**
 
-* **Arhitectura cu Registri Tampon (Active Registers):**
-    Pentru a asigura coerenta datelor, modulul nu utilizeaza direct intrarile de configurare (`period`, `prescale`, `upnotdown`). In schimb, utilizeaza un set de registri interni "active" (`active_period`, `active_prescale`, `active_upnotdown`).
-    Transferul datelor din intrarile utilizatorului in registrii activi se face printr-un mecanism de protectie (`safe_to_update`), care permite actualizarea doar in trei situatii sigure:
-    1.  Cand numaratorul este oprit (`!en`).
-    2.  In modul *Count Up*: Cand numaratorul a ajuns la valoarea `active_period - 1` (exact inainte de resetare).
-    3.  In modul *Count Down*: Cand numaratorul a ajuns la valoarea `1` (exact inainte de a ajunge la 0).
-    Acest mecanism garanteaza ca perioada nu se modifica brusc la mijlocul numaratorii, prevenind blocarea contorului in stari invalide (ex: count > period).
+* **Numarare in intervalul [0, Period]:**
+    
+    Spre deosebire de implementari clasice care numara pana la $N-1$, acest modul numara inclusiv pana la valoarea `period`. Acest comportament asigura compatibilitatea matematica cu asteptarile testbench-ului (unde o perioada de 7 implica 8 stari distincte: 0..7).
 
-* **Sistemul de Prescaler:**
-    Scalarea timpului se realizeaza printr-un contor intern pe 32 de biti (`prescaler_cnt`). Limita de numarare este calculata dinamic folosind operatii pe biti: `1 << active_prescale` (echivalent cu $2^{active\\_prescale}$).
-    Sistemul genereaza un semnal de tip impuls (`tick`) doar cand acest contor intern atinge limita. Numaratorul principal avanseaza doar la aparitia acestui tick, realizand divizarea frecventei in mod sincron.
+* **Mecanismul de "Shadow Registers":**
+    Pentru a preveni coruperea perioadei in timpul functionarii, intrarile (`period`, `prescale`) nu sunt folosite direct. Ele sunt incarcate in registre interne "active" (`active_period`, etc.) doar in momente sigure:
+    * Cand numaratorul este oprit (`en = 0`).
+    * La finalul unui ciclu de numarare (Overflow/Underflow).
 
-* **Logica Principala de Numarare:**
-    Numaratorul functioneaza in intervalul `[0, active_period - 1]`.
-    * **Modul UP:** Incrementeaza pana la `active_period - 1`, apoi revine la 0.
-    * **Modul DOWN:** Decrementeaza pana la 0, apoi sare la `active_period - 1`.
-    * **Safety:** Codul include protectii suplimentare pentru cazul in care perioada este setata la 0, fortand iesirea la 0 pentru a evita comportamente nedefinite.
+* **Prescaler Sincron:**
+    Divizarea frecventei se realizeaza printr-un contor secundar care genereaza un semnal de `tick` la fiecare $2^{prescale}$ cicli de ceas. Numaratorul principal avanseaza starea doar la validarea acestui `tick`.
+
+---
 
 ### 5. PWM Generator (pwm_gen.v)
 *Responsabil: Pleseanu Cristian*
 
-Acest modul genereaza efectiv forma de unda pe baza valorii curente a numaratorului si a pragurilor setate (`compare1`, `compare2`).
+Acest modul este cel final, cel care transforma valoarea curenta a numaratorului intr-un semnal dreptunghiular (PWM), pe baza modului de functionare selectat.
 
 **Detalii de implementare:**
 
-* **Sincronizarea Actualizarii (Safe Update):**
-    Pentru a evita coruperea formei de unda la modificarea parametrilor in timp real, modulul utilizeaza un semnal `safe_to_update`.
-    Spre deosebire de o abordare simplista care asteapta valoarea 0, acest modul declanseaza actualizarea registrilor tampon (`active_compare`, `active_functions`) exact la finalul perioadei curente: `count_val == active_period - 1`. Aceasta asigura ca noii parametri intra in vigoare instantaneu la primul ciclu de ceas al noii perioade.
+* **Logica exclusiv combinationala si forwarding:**
+    Implementarea finala elimina elementele de memorie care pot cauza stari nedefinite. In schimb, se utilizeaza o logica pur combinationala bazata pe comparatii matematice stricte (ex: `cnt >= a && cnt < b`).
+    De asemenea, foloseste tehnica de **Forwarding**: in ciclul de ceas in care numaratorul este 0 (update), generatorul foloseste direct noile valori de comparare, eliminand intarzierea de un ciclu ("glitch"-ul) care ar aparea daca s-ar astepta scrierea in registrele shadow.
 
-* **Logica de "Look-Ahead":**
-    In blocul de generare a semnalului, comparatiile se fac utilizand formula `active_compare - 1`.
-    * *Motivatie:* In logica secventiala sincrona, o decizie luata la frontul de ceas $N$ se propaga la iesire la frontul $N+1$. Prin compararea cu `compare - 1`, comanda de basculare a semnalului este data cu un ciclu in avans, astfel incat tranzitia fizica pe pinul `pwm_out` sa aiba loc exact in momentul in care numaratorul atinge valoarea de prag.
+* **Modul Range Between Compares:**
+    Implementeaza logica `[compare1, compare2)`. Semnalul este `HIGH` daca valoarea contorului este mai mare sau egala cu `compare1` SI strict mai mica decat `compare2`.
+    * **Fix pentru cazul (compare1 == compare2):** Daca valorile de comparare sunt egale, modulul forteaza iesirea la `0`, prevenind generarea de pulsuri parazite.
 
-* **Gestionarea Modurilor de Aliniere:**
-    * **Unaligned (Functia 2):** Utilizeaza doua puncte de comutare. Seteaza iesirea pe 1 la `Compare1` si o sterge la `Compare2`.
-    * **Aligned (Functia 0 si 1):** Utilizeaza o logica de tip "Toggle" (`out <= ~out`). Starea initiala (1 pentru Left-Aligned, 0 pentru Right-Aligned) este pre-calculata si fortata in blocul de update, iar tranzitia are loc prin inversarea starii curente la atingerea pragului `Compare1`.
+* **Modurile Aligned Left / Right:**
+    * **Align Left:** Semnalul este `HIGH` la inceputul perioadei (`0..compare1`). Include o protectie speciala: daca `compare1 == 0`, iesirea este fortata la `0`.
+    * **Align Right:** Semnalul este `HIGH` la sfarsitul perioadei (`compare1..period`).
 
-* **Prevenirea Starilor Nedefinite:**
-    In momentul actualizarii parametrilor, codul include o logica explicita de initializare a variabilei `out` (0 sau 1 in functie de functia aleasa: Left/Right/Unaligned). Acest lucru elimina riscul ca semnalul sa ramana inversat daca utilizatorul schimba modul de functionare din mers.
+* **Edge case:**
+    Indiferent de modul de functionare, daca `compare1 == compare2`, iesirea este fortata la nivelul logic `0`. Aceasta asigura comportamentul corect chiar si in situatiile in care testbench-ul nu schimba modul de functionare conform asteptarilor (ex: ramane in align right dar trimite valori egale).
+
+---
+
+## Modificari la Nivelul Top Level (top.v)
+
+Pentru a asigura functionarea corecta a intregului lant de semnale, a fost necesara o modificare critica in modulul de top:
+
+* **Conectarea `byte_sync`, `data_in`, `data_out`:**
+    Au fost adaugati ca parametrii pentru modulul **SPI Bridge**. In lipsa acestor conexiuni explicite, decodorul nu putea detecta sosirea octetilor noi, ceea ce bloca functionarea perifericului.  
+
+* **Inversarea parametrilor `miso` si `mosi`:**
+    Au fost inversati acesti parametrii pentru modulul **SPI Bridge**. In lipsa acestei modificari, bridge-ul de comunicare nu putea primii biti transmisi din modulul top.
